@@ -17,6 +17,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+/**
+ * Builds a filesystem-safe "YYYY-MM-DD_HH-mm-ss" timestamp for naming output files.
+ */
+function buildTimestamp() {
+  const d = new Date();
+  const pad = (n) => n.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+}
+
 // Enable CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
@@ -161,7 +170,11 @@ app.post('/api/generate-bulk', async (req, res) => {
     musicVolume,       // 0.0 to 1.0 background music volume
     animationSpeed,    // 'slow', 'normal', 'fast'
     allowedAnimations, // array of animation indices (0-9), max 3
-    musicSections      // array of { start: number, end: number }
+    musicSections,     // array of { start: number, end: number }
+    sameTextThroughout, // boolean - use first row's text for entire video
+    captionPosition,   // 'top', 'center', 'bottom'
+    captionsEnabled,   // boolean - whether to show captions
+    videoAudioSettings // { [filename]: { useOriginalAudio: bool, volume: 0-1 } }
   } = req.body;
 
   if (!assets || assets.length === 0) {
@@ -173,7 +186,7 @@ app.post('/api/generate-bulk', async (req, res) => {
 
   const jobId = 'job_' + Date.now();
   const rowsToProcess = tableRows.slice(0, 20);
-  const videosCount = rowsToProcess.length * (variationCount || 1);
+  const videosCount = variationCount || 1;
 
   jobsStore.set(jobId, {
     id: jobId,
@@ -197,7 +210,11 @@ app.post('/api/generate-bulk', async (req, res) => {
     musicVolume: musicVolume !== undefined ? musicVolume : 0.15,
     animationSpeed: animationSpeed || 'normal',
     allowedAnimations: allowedAnimations || [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    musicSections: musicSections || []
+    musicSections: musicSections || [],
+    sameTextThroughout: !!sameTextThroughout,
+    captionPosition: captionPosition || 'bottom',
+    captionsEnabled: captionsEnabled !== false,
+    videoAudioSettings: videoAudioSettings || {}
   });
 
   res.json({ success: true, jobId, totalVideos: videosCount });
@@ -215,6 +232,108 @@ app.get('/api/status/:jobId', (req, res) => {
 });
 
 /**
+ * Endpoint to re-render a single video with per-slide overrides (editor flow).
+ */
+app.post('/api/re-render', async (req, res) => {
+  const {
+    assets,
+    slideOverrides,
+    stylePreset,
+    titleText,
+    quoteText,
+    voiceoverEnabled,
+    voiceStyle,
+    musicTrack,
+    musicVolume,
+    animationSpeed,
+    musicStartTime,
+    musicSectionDuration,
+    sameTextThroughout,
+    captionPosition,
+    tableRows
+  } = req.body;
+
+  if (!assets || assets.length === 0) {
+    return res.status(400).json({ error: 'At least one asset is required.' });
+  }
+  if (!slideOverrides || slideOverrides.length !== assets.length) {
+    return res.status(400).json({ error: 'slideOverrides must match assets length.' });
+  }
+
+  const jobId = 'edit_' + Date.now();
+  const outFilename = `${buildTimestamp()}_edited.mp4`;
+  const localOutputPath = path.join(OUTPUTS_DIR, outFilename);
+  const localAssetPaths = assets.map(filename => path.join(UPLOADS_DIR, filename));
+  const localMusicPath = musicTrack ? path.join(UPLOADS_DIR, musicTrack) : null;
+
+  try {
+    let voiceoverResult = null;
+    if (voiceoverEnabled && quoteText && quoteText.trim().length > 0) {
+      const voiceoverFilename = `tts_${jobId}.mp3`;
+      voiceoverResult = await audioService.generateVoiceover(
+        quoteText,
+        voiceStyle || 'deep-cinematic',
+        OUTPUTS_DIR,
+        voiceoverFilename
+      );
+    }
+
+    await videoService.renderVideoWithOverrides({
+      assets: localAssetPaths,
+      slideOverrides,
+      voiceoverPath: voiceoverResult ? voiceoverResult.audioPath : null,
+      wordTimings: voiceoverResult ? voiceoverResult.words : [],
+      musicPath: localMusicPath,
+      stylePreset: parseInt(stylePreset) || 1,
+      outputPath: localOutputPath,
+      titleText: titleText || '',
+      quoteText: quoteText || '',
+      voiceoverEnabled: !!voiceoverResult,
+      musicVolume: musicVolume !== undefined ? musicVolume : 0.15,
+      animationSpeed: animationSpeed || 'normal',
+      musicStartTime: parseFloat(musicStartTime) || 0,
+      musicSectionDuration: parseFloat(musicSectionDuration) || 0,
+      sameTextThroughout: !!sameTextThroughout,
+      captionPosition: captionPosition || 'bottom',
+      tableRows: tableRows || []
+    });
+
+    if (voiceoverResult && fs.existsSync(voiceoverResult.audioPath)) {
+      try { fs.unlinkSync(voiceoverResult.audioPath); } catch (e) {}
+    }
+
+    res.json({
+      success: true,
+      video: {
+        id: jobId,
+        title: titleText || 'Edited Video',
+        quote: quoteText || '',
+        stylePreset: parseInt(stylePreset) || 1,
+        filename: outFilename,
+        url: `/outputs/${outFilename}`,
+        editorMeta: {
+          assets,
+          slideDuration: slideOverrides[0]?.duration || 3,
+          animationSpeed,
+          allowedAnimations: slideOverrides.map(s => s.animation),
+          voiceoverEnabled: !!voiceoverResult,
+          voiceStyle: voiceStyle || 'deep-cinematic',
+          musicTrack: musicTrack || null,
+          musicVolume,
+          orderOfInsertion: true,
+          variationIndex: 0,
+          sameTextThroughout: !!sameTextThroughout,
+          captionPosition: captionPosition || 'bottom'
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[Server] Re-render failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * Asynchronously processes the bulk video rendering list.
  */
 async function processBulkRenderingJob(jobId, config) {
@@ -222,105 +341,116 @@ async function processBulkRenderingJob(jobId, config) {
   const {
     assets, musicTrack, voiceStyle, stylePreset, orderOfInsertion,
     variationCount, rowsToProcess, voiceoverEnabled, slideDuration,
-    musicVolume, animationSpeed, allowedAnimations, musicSections
+    musicVolume, animationSpeed, allowedAnimations, musicSections,
+    sameTextThroughout, captionPosition, captionsEnabled, videoAudioSettings
   } = config;
   
-  const totalSteps = rowsToProcess.length * variationCount;
+  const totalSteps = variationCount;
   let completedSteps = 0;
 
   try {
     const localAssetPaths = assets.map(filename => path.join(UPLOADS_DIR, filename));
     const localMusicPath = musicTrack ? path.join(UPLOADS_DIR, musicTrack) : null;
 
-    for (let r = 0; r < rowsToProcess.length; r++) {
-      const row = rowsToProcess[r];
-      const titleText = row.title || '';
-      const quoteText = row.quote || '';
+    // Combine all quote text for voiceover (join all rows)
+    const allQuoteText = rowsToProcess.map(r => r.quote).filter(q => q && q.trim()).join('. ');
+    const titleText = rowsToProcess[0]?.title || '';
 
-      // Generate TTS Voiceover only if enabled and there is text
-      let voiceoverResult = null;
-      if (voiceoverEnabled && quoteText.trim().length > 0) {
-        const rowVoiceoverFilename = `tts_${jobId}_row_${r}.mp3`;
-        voiceoverResult = await audioService.generateVoiceover(
-          quoteText,
-          voiceStyle,
-          OUTPUTS_DIR,
-          rowVoiceoverFilename
-        );
+    // Generate TTS Voiceover if enabled
+    let voiceoverResult = null;
+    if (voiceoverEnabled && allQuoteText.trim().length > 0) {
+      const voiceoverFilename = `tts_${jobId}.mp3`;
+      voiceoverResult = await audioService.generateVoiceover(
+        allQuoteText,
+        voiceStyle,
+        OUTPUTS_DIR,
+        voiceoverFilename
+      );
+    }
+
+    for (let v = 0; v < variationCount; v++) {
+      let activeStyle = stylePreset;
+      if (stylePreset === 'random') {
+        activeStyle = Math.floor(Math.random() * 10) + 1;
+      } else {
+        activeStyle = parseInt(stylePreset) || 1;
       }
 
-      // Render variation count for this row
-      for (let v = 0; v < variationCount; v++) {
-        let activeStyle = stylePreset;
-        if (stylePreset === 'random') {
-          activeStyle = Math.floor(Math.random() * 10) + 1;
-        } else {
-          activeStyle = parseInt(stylePreset) || 1;
-        }
+      const outFilename = `${buildTimestamp()}_v${v + 1}.mp4`;
+      const localOutputPath = path.join(OUTPUTS_DIR, outFilename);
 
-        const outFilename = `video_${jobId}_r${r}_v${v}.mp4`;
-        const localOutputPath = path.join(OUTPUTS_DIR, outFilename);
-
-        // Determine music start and duration for this variation
-        let musicStartTime = 0;
-        let musicSectionDuration = 0;
-        if (musicSections && musicSections.length > 0) {
-          const section = musicSections[v % musicSections.length];
-          if (section) {
-            musicStartTime = parseFloat(section.start) || 0;
-            const endVal = parseFloat(section.end) || 0;
-            if (endVal > musicStartTime) {
-              musicSectionDuration = endVal - musicStartTime;
-            }
+      let musicStartTime = 0;
+      let musicSectionDuration = 0;
+      if (musicSections && musicSections.length > 0) {
+        const section = musicSections[v % musicSections.length];
+        if (section) {
+          musicStartTime = parseFloat(section.start) || 0;
+          const endVal = parseFloat(section.end) || 0;
+          if (endVal > musicStartTime) {
+            musicSectionDuration = endVal - musicStartTime;
           }
         }
+      }
 
-        console.log(`[Server] Rendering row ${r}, variation ${v}: style ${activeStyle}, voiceover: ${!!voiceoverResult}, musicStart: ${musicStartTime}s`);
-        
-        await videoService.renderVideo({
-          assets: localAssetPaths,
-          voiceoverPath: voiceoverResult ? voiceoverResult.audioPath : null,
-          wordTimings: voiceoverResult ? voiceoverResult.words : [],
-          musicPath: localMusicPath,
-          stylePreset: activeStyle,
-          orderOfInsertion,
-          outputPath: localOutputPath,
-          titleText,
-          voiceoverEnabled: !!voiceoverResult,
+      console.log(`[Server] Rendering variation ${v}: style ${activeStyle}, voiceover: ${!!voiceoverResult}, captions: ${rowsToProcess.length}`);
+
+      await videoService.renderVideo({
+        assets: localAssetPaths,
+        voiceoverPath: voiceoverResult ? voiceoverResult.audioPath : null,
+        wordTimings: voiceoverResult ? voiceoverResult.words : [],
+        musicPath: localMusicPath,
+        stylePreset: activeStyle,
+        orderOfInsertion,
+        outputPath: localOutputPath,
+        titleText,
+        voiceoverEnabled: !!voiceoverResult,
+        slideDuration,
+        musicVolume,
+        animationSpeed,
+        allowedAnimations,
+        tableRows: captionsEnabled ? rowsToProcess : [],
+        variationIndex: v,
+        sameTextThroughout,
+        captionPosition,
+        captionsEnabled,
+        musicStartTime,
+        musicSectionDuration,
+        videoAudioSettings: videoAudioSettings || {}
+      });
+
+      completedSteps++;
+      job.progress = Math.round((completedSteps / totalSteps) * 100);
+
+      job.videos.push({
+        id: `0_${v}`,
+        title: titleText || `Video (Var ${v + 1})`,
+        quote: allQuoteText,
+        stylePreset: activeStyle,
+        filename: outFilename,
+        url: `/outputs/${outFilename}`,
+        editorMeta: {
+          assets: assets,
           slideDuration,
-          musicVolume,
           animationSpeed,
           allowedAnimations,
-          tableRows: [row],  // Pass only the current row for caption generation
+          voiceoverEnabled: !!voiceoverResult,
+          voiceStyle,
+          musicTrack: musicTrack || null,
+          musicVolume,
+          orderOfInsertion,
           variationIndex: v,
-          musicStartTime,
-          musicSectionDuration
-        });
-
-        completedSteps++;
-        job.progress = Math.round((completedSteps / totalSteps) * 100);
-        
-        job.videos.push({
-          id: `${r}_${v}`,
-          title: titleText || `Video Row ${r + 1} (Var ${v + 1})`,
-          quote: quoteText,
-          stylePreset: activeStyle,
-          filename: outFilename,
-          url: `/outputs/${outFilename}`
-        });
-
-        // Save progress update
-        jobsStore.set(jobId, { ...job });
-      }
-
-      // Cleanup temporary tts file for this row
-      if (voiceoverResult && fs.existsSync(voiceoverResult.audioPath)) {
-        try {
-          fs.unlinkSync(voiceoverResult.audioPath);
-        } catch (e) {
-          console.warn('Could not clean tts temp audio:', voiceoverResult.audioPath);
+          sameTextThroughout,
+          captionPosition,
+          tableRows: rowsToProcess
         }
-      }
+      });
+
+      jobsStore.set(jobId, { ...job });
+    }
+
+    // Cleanup TTS file
+    if (voiceoverResult && fs.existsSync(voiceoverResult.audioPath)) {
+      try { fs.unlinkSync(voiceoverResult.audioPath); } catch (e) {}
     }
 
     job.status = 'completed';

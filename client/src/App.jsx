@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Upload, Trash2, Plus, Play, Download, Sparkles, 
-  Settings, RefreshCw, Music, Film, Image as ImageIcon, 
-  CheckCircle2, AlertCircle, X, Layers, Mic, MicOff, Zap
+import {
+  Upload, Trash2, Plus, Play, Download, Sparkles,
+  Settings, RefreshCw, Music, Film, Image as ImageIcon,
+  CheckCircle2, AlertCircle, X, Layers, Mic, MicOff, Zap, Pencil
 } from 'lucide-react';
+import VideoEditor from './VideoEditor.jsx';
 
 const STYLE_NAMES = {
   1: 'Hormozi Pop',
@@ -45,6 +46,9 @@ export default function App() {
   const [stylePreset, setStylePreset] = useState('1');
   const [variationCount, setVariationCount] = useState(1);
   const [orderOfInsertion, setOrderOfInsertion] = useState(true);
+  const [sameTextThroughout, setSameTextThroughout] = useState(false);
+  const [captionsEnabled, setCaptionsEnabled] = useState(true);
+  const [captionPosition, setCaptionPosition] = useState('bottom');
   const [voiceoverEnabled, setVoiceoverEnabled] = useState(true);
   const [slideDuration, setSlideDuration] = useState(3);
   const [musicVolume, setMusicVolume] = useState(0.15);
@@ -56,28 +60,40 @@ export default function App() {
   const [enableMusicTrim, setEnableMusicTrim] = useState(false);
   const [playingSectionIndex, setPlayingSectionIndex] = useState(null);
   const [audioDuration, setAudioDuration] = useState(0);
+  const [sameMusicSectionForAll, setSameMusicSectionForAll] = useState(true);
+
+  // Per-video original audio settings: { [assetId]: { useOriginalAudio: bool, volume: 0-1 } }
+  const [videoAudioSettings, setVideoAudioSettings] = useState({});
+  const [copyAudioSettingToAll, setCopyAudioSettingToAll] = useState(false);
 
   const audioPlaybackRef = useRef(null);
   const playbackTimeoutRef = useRef(null);
   
   const [tableRows, setTableRows] = useState([
-    { title: 'Visual Hook', quote: 'Stop doing this mistake today if you want to scale your content fast.' }
+    { title: 'Visual Hook', quote: 'Stop doing this mistake today if you want to scale your content fast.', startTime: 0, textAnimation: 'none', textBackground: 'black' }
   ]);
   const [topicInput, setTopicInput] = useState('');
   const [isGeneratingQuotes, setIsGeneratingQuotes] = useState(false);
   
   const [jobs, setJobs] = useState([]);
-  const [completedVideos, setCompletedVideos] = useState([]);
+  const [completedVideos, setCompletedVideos] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('reelsflow_videos') || '[]');
+    } catch { return []; }
+  });
+  const [showDeletePrompt, setShowDeletePrompt] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [errorBanner, setErrorBanner] = useState(null);
   const [isDragActive, setIsDragActive] = useState(false);
-  
+  const [editorVideo, setEditorVideo] = useState(null);
+
   const fileInputRef = useRef(null);
   const musicInputRef = useRef(null);
 
   useEffect(() => { localStorage.setItem('gemini_api_key', apiKey); }, [apiKey]);
+  useEffect(() => { localStorage.setItem('reelsflow_videos', JSON.stringify(completedVideos.slice(0, 20))); }, [completedVideos]);
 
   // Synchronize musicSections count to variationCount without wiping edits
   useEffect(() => {
@@ -197,7 +213,21 @@ export default function App() {
           }
         } else {
           const visualFiles = data.files.filter(f => f.type === 'image' || f.type === 'video');
-          if (visualFiles.length > 0) setAssets(prev => [...prev, ...visualFiles]);
+          if (visualFiles.length > 0) {
+            const withDurations = await Promise.all(visualFiles.map(f => {
+              if (f.type === 'video') {
+                return new Promise(resolve => {
+                  const vid = document.createElement('video');
+                  vid.preload = 'metadata';
+                  vid.onloadedmetadata = () => { resolve({ ...f, duration: vid.duration }); URL.revokeObjectURL(vid.src); };
+                  vid.onerror = () => resolve({ ...f, duration: 0 });
+                  vid.src = `${API_BASE}${f.path}`;
+                });
+              }
+              return Promise.resolve({ ...f, duration: 0 });
+            }));
+            setAssets(prev => [...prev, ...withDurations]);
+          }
           else setErrorBanner('No valid image or video assets found.');
         }
       } else {
@@ -242,7 +272,7 @@ export default function App() {
         body: JSON.stringify({ topic: topicInput, count: 5 })
       });
       const data = await res.json();
-      if (data.success && data.quotes) setTableRows(data.quotes.map(q => ({ title: q.title, quote: q.quote })));
+      if (data.success && data.quotes) setTableRows(data.quotes.map((q, i) => ({ title: q.title, quote: q.quote, startTime: i * 3, textAnimation: 'none', textBackground: 'black' })));
       else setErrorBanner(data.error || 'Failed to generate quotes');
     } catch (err) {
       setErrorBanner('Error contacting quote generator API');
@@ -253,16 +283,40 @@ export default function App() {
 
   const addTableRow = () => {
     if (tableRows.length >= 20) { setErrorBanner('Maximum of 20 rows reached.'); return; }
-    setTableRows([...tableRows, { title: '', quote: '' }]);
+    setTableRows([...tableRows, { title: '', quote: '', startTime: 0, textAnimation: 'none', textBackground: 'black' }]);
   };
   const updateTableRow = (i, field, val) => {
     const u = [...tableRows]; u[i][field] = val; setTableRows(u);
   };
   const deleteTableRow = (i) => {
     const u = tableRows.filter((_, idx) => idx !== i);
-    setTableRows(u.length > 0 ? u : [{ title: '', quote: '' }]);
+    setTableRows(u.length > 0 ? u : [{ title: '', quote: '', startTime: 0, textAnimation: 'none', textBackground: 'black' }]);
   };
   const removeAsset = (id) => setAssets(assets.filter(a => a.id !== id));
+
+  const videoAssets = assets.filter(a => a.type === 'video');
+
+  const getVideoAudioSetting = (assetId) => videoAudioSettings[assetId] || { useOriginalAudio: false, volume: 1.0 };
+
+  const updateVideoAudioSetting = (assetId, updates) => {
+    setCopyAudioSettingToAll(false);
+    setVideoAudioSettings(prev => ({
+      ...prev,
+      [assetId]: { ...getVideoAudioSetting(assetId), ...updates }
+    }));
+  };
+
+  const handleToggleCopyAudioToAll = (checked) => {
+    setCopyAudioSettingToAll(checked);
+    if (checked && videoAssets.length > 0) {
+      const base = getVideoAudioSetting(videoAssets[0].id);
+      setVideoAudioSettings(prev => {
+        const next = { ...prev };
+        videoAssets.forEach(a => { next[a.id] = { ...base }; });
+        return next;
+      });
+    }
+  };
 
   const triggerBulkRender = async () => {
     if (assets.length === 0) { setErrorBanner('Please upload at least one image or video.'); return; }
@@ -270,6 +324,15 @@ export default function App() {
     if (validRows.length === 0) { setErrorBanner('Please add at least one quote/dialogue row.'); return; }
     if (allowedAnimations.length === 0) { setErrorBanner('Please select at least 1 animation.'); return; }
 
+    const newCount = parseInt(variationCount) || 1;
+    if (completedVideos.length + newCount > 20) {
+      setShowDeletePrompt(true);
+      return;
+    }
+    await doRender(validRows);
+  };
+
+  const doRender = async (validRows) => {
     setIsRendering(true); setErrorBanner(null);
     try {
       const res = await fetch(`${API_BASE}/api/generate-bulk`, {
@@ -288,7 +351,11 @@ export default function App() {
           musicVolume: parseFloat(musicVolume),
           animationSpeed,
           allowedAnimations,
-          musicSections: enableMusicTrim ? musicSections : []
+          musicSections: enableMusicTrim ? musicSections : [],
+          sameTextThroughout,
+          captionPosition,
+          captionsEnabled,
+          videoAudioSettings
         })
       });
       const data = await res.json();
@@ -325,7 +392,22 @@ export default function App() {
     });
   };
 
-  const totalOutputCount = tableRows.filter(r => r.quote.trim().length > 0).length * variationCount;
+  const downloadVideo = (url, filename) => {
+    fetch(url)
+      .then(res => res.blob())
+      .then(blob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename || 'video.mp4';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => window.open(url, '_blank'));
+  };
+
+  const totalOutputCount = variationCount;
 
   return (
     <div className="app-container">
@@ -404,6 +486,53 @@ export default function App() {
               </div>
             </div>
 
+            {/* Per-Video Original Audio Settings */}
+            {videoAssets.length > 0 && (
+              <div style={{ marginTop: '1.25rem', padding: '1rem', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#e2e8f0' }}>🎬 Video Clip Audio</span>
+                  {videoAssets.length > 1 && (
+                    <label style={{ fontSize: '0.8rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                      <input type="checkbox" checked={copyAudioSettingToAll}
+                        onChange={e => handleToggleCopyAudioToAll(e.target.checked)}
+                        style={{ accentColor: 'var(--accent-purple)' }} />
+                      🔁 Apply same setting to all videos
+                    </label>
+                  )}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                  {videoAssets.map(asset => {
+                    const setting = getVideoAudioSetting(asset.id);
+                    return (
+                      <div key={asset.id} style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-light)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px' }}>
+                            {asset.originalName || asset.filename}
+                          </span>
+                          <label style={{ fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={setting.useOriginalAudio}
+                              onChange={e => updateVideoAudioSetting(asset.id, { useOriginalAudio: e.target.checked })}
+                              style={{ accentColor: 'var(--accent-emerald)' }} />
+                            Use Original Audio
+                          </label>
+                        </div>
+                        {setting.useOriginalAudio && (
+                          <div style={{ marginTop: '0.5rem' }}>
+                            <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.2rem' }}>
+                              Volume: {Math.round(setting.volume * 100)}%
+                            </label>
+                            <input type="range" min="0" max="1" step="0.05" value={setting.volume}
+                              onChange={e => updateVideoAudioSetting(asset.id, { volume: parseFloat(e.target.value) })}
+                              style={{ width: '100%', accentColor: 'var(--accent-emerald)' }} />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Background Music Section Picker */}
             {musicTrack && (
               <div style={{ marginTop: '1.25rem', padding: '1rem', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)' }}>
@@ -418,6 +547,22 @@ export default function App() {
                     </span>
                   )}
                 </div>
+
+                {enableMusicTrim && musicSections.length > 1 && (
+                  <label style={{ fontSize: '0.8rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    <input type="checkbox" checked={sameMusicSectionForAll}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setSameMusicSectionForAll(checked);
+                        if (checked && musicSections.length > 0) {
+                          const base = musicSections[0];
+                          setMusicSections(prev => prev.map(() => ({ ...base })));
+                        }
+                      }}
+                      style={{ accentColor: 'var(--accent-purple)' }} />
+                    🔁 Apply same section to all variations
+                  </label>
+                )}
 
                 {enableMusicTrim && (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem', marginTop: '0.75rem' }}>
@@ -437,6 +582,7 @@ export default function App() {
                               value={sec.start}
                               onChange={e => {
                                 const startVal = Math.max(0, Math.min(audioDuration, parseFloat(e.target.value) || 0));
+                                setSameMusicSectionForAll(false);
                                 setMusicSections(prev => prev.map((s, i) => i === idx ? { ...s, start: startVal } : s));
                               }}
                             />
@@ -447,6 +593,7 @@ export default function App() {
                               value={sec.end}
                               onChange={e => {
                                 const endVal = Math.max(0, Math.min(audioDuration, parseFloat(e.target.value) || 0));
+                                setSameMusicSectionForAll(false);
                                 setMusicSections(prev => prev.map((s, i) => i === idx ? { ...s, end: endVal } : s));
                               }}
                             />
@@ -476,6 +623,7 @@ export default function App() {
                               onChange={e => {
                                 const startVal = parseFloat(e.target.value);
                                 const endVal = Math.max(startVal + 0.5, sec.end);
+                                setSameMusicSectionForAll(false);
                                 setMusicSections(prev => prev.map((s, i) => i === idx ? { start: startVal, end: Math.min(audioDuration, endVal) } : s));
                               }}
                               style={{ flex: 1, height: '4px', accentColor: 'var(--accent-purple)' }}
@@ -493,6 +641,7 @@ export default function App() {
                               onChange={e => {
                                 const endVal = parseFloat(e.target.value);
                                 const startVal = Math.min(endVal - 0.5, sec.start);
+                                setSameMusicSectionForAll(false);
                                 setMusicSections(prev => prev.map((s, i) => i === idx ? { start: Math.max(0, startVal), end: endVal } : s));
                               }}
                               style={{ flex: 1, height: '4px', accentColor: 'var(--accent-cyber)' }}
@@ -572,6 +721,22 @@ export default function App() {
           {/* Step 3: Voice & Timing Settings */}
           <div className="creator-card">
             <h2 className="card-title"><Mic size={18} style={{ color: 'var(--accent-emerald)' }} /> 3. Voice &amp; Timing</h2>
+            {voiceoverEnabled && assets.length > 0 && (() => {
+              const imageCount = assets.filter(a => a.type === 'image').length;
+              const videoTotal = assets.filter(a => a.type === 'video').reduce((sum, a) => sum + (a.duration || 0), 0);
+              const totalSlideTime = (imageCount * slideDuration) + videoTotal;
+              if (totalSlideTime < 5) {
+                return (
+                  <div style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: '8px', padding: '0.6rem 0.85rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <AlertCircle size={16} style={{ color: '#fbbf24', flexShrink: 0 }} />
+                    <span style={{ fontSize: '0.8rem', color: '#fde68a' }}>
+                      Total slide time is only <strong>{totalSlideTime.toFixed(1)}s</strong>. If the voiceover is longer, the video will be cut short. Increase slide duration or add more assets.
+                    </span>
+                  </div>
+                );
+              }
+              return null;
+            })()}
             <div className="controls-grid">
               <div className="form-group">
                 <label>Voiceover</label>
@@ -589,7 +754,7 @@ export default function App() {
                 </div>
               </div>
 
-              {voiceoverEnabled ? (
+              {voiceoverEnabled && (
                 <div className="form-group">
                   <label>Voice Style</label>
                   <select className="form-select" value={voiceStyle} onChange={e => setVoiceStyle(e.target.value)}>
@@ -597,17 +762,46 @@ export default function App() {
                     <option value="female-narrator">👩 Female Narrator (Aria)</option>
                   </select>
                 </div>
-              ) : (
-                <div className="form-group">
-                  <label>Slide Duration: {slideDuration}s per slide</label>
-                  <input type="range" min="1" max="10" step="0.5" value={slideDuration}
-                    onChange={e => setSlideDuration(parseFloat(e.target.value))}
-                    style={{ width: '100%', accentColor: 'var(--accent-emerald)' }} />
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Total video ~{(assets.length * slideDuration).toFixed(1)}s with {assets.length} asset{assets.length !== 1 ? 's' : ''}
-                  </span>
-                </div>
               )}
+              <div className="form-group">
+                <label>Slide Duration: {slideDuration}s per image</label>
+                <input type="range" min="1" max="15" step="0.5" value={slideDuration}
+                  onChange={e => setSlideDuration(parseFloat(e.target.value))}
+                  style={{ width: '100%', accentColor: 'var(--accent-emerald)' }} />
+                {(() => {
+                  const imageCount = assets.filter(a => a.type === 'image').length;
+                  const videoTotal = assets.filter(a => a.type === 'video').reduce((sum, a) => sum + (a.duration || 0), 0);
+                  const totalLength = (imageCount * slideDuration) + videoTotal;
+                  return (
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      Total: ~{totalLength.toFixed(1)}s
+                      {imageCount > 0 && <> ({imageCount} image{imageCount !== 1 ? 's' : ''} × {slideDuration}s = {(imageCount * slideDuration).toFixed(1)}s)</>}
+                      {videoTotal > 0 && <> + {videoTotal.toFixed(1)}s video</>}
+                    </span>
+                  );
+                })()}
+              </div>
+              <div className="form-group">
+                <label>Captions</label>
+                <div style={{ display: 'flex', gap: '0.4rem' }}>
+                  {[
+                    { value: 'off', label: '🚫 Off' },
+                    { value: 'top', label: '⬆ Top' },
+                    { value: 'center', label: '⬛ Center' },
+                    { value: 'bottom', label: '⬇ Bottom' }
+                  ].map(pos => (
+                    <button key={pos.value}
+                      onClick={() => {
+                        if (pos.value === 'off') { setCaptionsEnabled(false); }
+                        else { setCaptionsEnabled(true); setCaptionPosition(pos.value); }
+                      }}
+                      className={`btn ${(pos.value === 'off' && !captionsEnabled) || (pos.value !== 'off' && captionsEnabled && captionPosition === pos.value) ? 'btn-primary' : 'btn-secondary'}`}
+                      style={{ flex: 1, padding: '0.45rem', fontSize: '0.75rem' }}>
+                      {pos.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -631,14 +825,29 @@ export default function App() {
               </div>
             </div>
 
+            <div style={{ marginBottom: '1rem' }}>
+              <div className={`toggle-group ${sameTextThroughout ? 'active' : ''}`} onClick={() => setSameTextThroughout(!sameTextThroughout)}>
+                <div className="toggle-switch"></div>
+                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Same caption throughout entire video</span>
+              </div>
+              {sameTextThroughout && (
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem', marginLeft: '3.2rem' }}>
+                  The first row's text will display for the full video duration
+                </p>
+              )}
+            </div>
+
             <div className="table-container">
               <table className="bulk-table">
                 <thead>
                   <tr>
-                    <th style={{ width: '40px', textAlign: 'center' }}>#</th>
-                    <th style={{ width: '170px' }}>Title Overlay (Optional)</th>
-                    <th>Quotes / Narration Text</th>
-                    <th style={{ width: '40px' }}></th>
+                    <th style={{ width: '35px', textAlign: 'center' }}>#</th>
+                    <th style={{ width: '130px' }}>Title (Optional)</th>
+                    <th>Caption Text</th>
+                    <th style={{ width: '70px' }}>Start (s)</th>
+                    <th style={{ width: '110px' }}>Animation</th>
+                    <th style={{ width: '90px' }}>Background</th>
+                    <th style={{ width: '35px' }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -647,6 +856,27 @@ export default function App() {
                       <td className="row-index">{i + 1}</td>
                       <td><input type="text" placeholder={`Title ${i + 1}`} value={row.title} onChange={e => updateTableRow(i, 'title', e.target.value)} /></td>
                       <td><textarea rows={2} placeholder="Type dialogue / quote..." value={row.quote} onChange={e => updateTableRow(i, 'quote', e.target.value)} /></td>
+                      <td>
+                        <input type="number" min="0" step="0.5" value={row.startTime || 0}
+                          onChange={e => updateTableRow(i, 'startTime', parseFloat(e.target.value) || 0)}
+                          style={{ width: '100%', textAlign: 'center' }} />
+                      </td>
+                      <td>
+                        <select value={row.textAnimation || 'none'} onChange={e => updateTableRow(i, 'textAnimation', e.target.value)}
+                          style={{ width: '100%', background: 'transparent', border: '1px solid transparent', color: 'var(--text-primary)', padding: '0.4rem', borderRadius: '6px', fontSize: '0.8rem', outline: 'none' }}>
+                          <option value="none">None</option>
+                          <option value="typed">Typed</option>
+                          <option value="blur-out">Blur Out</option>
+                        </select>
+                      </td>
+                      <td>
+                        <select value={row.textBackground || 'black'} onChange={e => updateTableRow(i, 'textBackground', e.target.value)}
+                          style={{ width: '100%', background: 'transparent', border: '1px solid transparent', color: 'var(--text-primary)', padding: '0.4rem', borderRadius: '6px', fontSize: '0.8rem', outline: 'none' }}>
+                          <option value="black">Black</option>
+                          <option value="dark-gray">Dark Gray</option>
+                          <option value="none">None</option>
+                        </select>
+                      </td>
                       <td><button className="delete-row-btn" onClick={() => deleteTableRow(i)}><Trash2 size={15} /></button></td>
                     </tr>
                   ))}
@@ -656,7 +886,7 @@ export default function App() {
 
             <div className="actions-row">
               <button className="btn btn-secondary" onClick={addTableRow}><Plus size={16} /> Add Row</button>
-              <button className="btn btn-secondary" onClick={() => setTableRows([{ title: '', quote: '' }])}>Clear</button>
+              <button className="btn btn-secondary" onClick={() => setTableRows([{ title: '', quote: '', startTime: 0, textAnimation: 'none', textBackground: 'black' }])}>Clear</button>
               <button className="btn btn-accent" style={{ marginLeft: 'auto' }}
                 onClick={triggerBulkRender}
                 disabled={isRendering || isUploading || assets.length === 0}>
@@ -689,9 +919,9 @@ export default function App() {
                     Style {selectedVideo.stylePreset}: {STYLE_NAMES[selectedVideo.stylePreset]}
                   </span>
                 </div>
-                <a href={`${API_BASE}${selectedVideo.url}`} download className="btn btn-primary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}>
+                <button onClick={() => downloadVideo(`${API_BASE}${selectedVideo.url}`, selectedVideo.filename)} className="btn btn-primary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}>
                   <Download size={14} /> Download
-                </a>
+                </button>
               </div>
             )}
           </div>
@@ -726,24 +956,69 @@ export default function App() {
               <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: '2rem 0' }}>No renders yet. Click Generate above!</p>
             ) : (
               <div className="outputs-list">
-                {completedVideos.map(video => (
-                  <div key={video.filename} className={`output-item ${selectedVideo?.filename === video.filename ? 'active' : ''}`} onClick={() => setSelectedVideo(video)}>
-                    <div className="output-info">
-                      <div className="output-title">{video.title}</div>
-                      <div className="output-subtitle">{video.quote}</div>
-                      <span className={`style-badge style-${video.stylePreset}`}>{STYLE_NAMES[video.stylePreset]}</span>
+                {completedVideos.map(video => {
+                  const tsMatch = video.filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})/);
+                  const displayTs = tsMatch ? `${tsMatch[1]} ${tsMatch[2].replace(/-/g, ':')}` : null;
+                  return (
+                    <div key={video.filename} className={`output-item ${selectedVideo?.filename === video.filename ? 'active' : ''}`} onClick={() => setSelectedVideo(video)}>
+                      <div className="output-info">
+                        <div className="output-title">{video.filename}</div>
+                        {displayTs && (
+                          <div style={{ fontSize: '0.7rem', color: 'var(--accent-cyber)', marginBottom: '0.15rem' }}>🕐 {displayTs}</div>
+                        )}
+                        <div className="output-subtitle">{video.quote}</div>
+                        <span className={`style-badge style-${video.stylePreset}`}>{STYLE_NAMES[video.stylePreset]}</span>
+                      </div>
+                      <div className="output-actions" onClick={e => e.stopPropagation()}>
+                        <button className="icon-btn" onClick={() => setSelectedVideo(video)} title="Play"><Play size={12} /></button>
+                        {video.editorMeta && <button className="icon-btn" onClick={() => setEditorVideo(video)} title="Edit"><Pencil size={12} /></button>}
+                        <button className="icon-btn" onClick={() => downloadVideo(`${API_BASE}${video.url}`, video.filename)} title="Download"><Download size={12} /></button>
+                      </div>
                     </div>
-                    <div className="output-actions" onClick={e => e.stopPropagation()}>
-                      <button className="icon-btn" onClick={() => setSelectedVideo(video)} title="Play"><Play size={12} /></button>
-                      <a href={`${API_BASE}${video.url}`} download className="icon-btn" title="Download"><Download size={12} /></a>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {showDeletePrompt && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 150, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)' }}>
+          <div className="creator-card" style={{ maxWidth: '420px', margin: 0, textAlign: 'center' }}>
+            <AlertCircle size={32} style={{ color: '#fbbf24', marginBottom: '0.75rem' }} />
+            <h3 style={{ fontFamily: 'var(--font-display)', marginBottom: '0.5rem' }}>Video Limit Reached</h3>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+              You have {completedVideos.length} saved videos (max 20). Delete old videos to make room for new ones?
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+              <button className="btn btn-secondary" onClick={() => setShowDeletePrompt(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={() => {
+                setCompletedVideos([]);
+                setSelectedVideo(null);
+                setShowDeletePrompt(false);
+              }}>Delete All &amp; Continue</button>
+              <button className="btn btn-accent" onClick={() => {
+                const keep = completedVideos.slice(0, 10);
+                setCompletedVideos(keep);
+                if (selectedVideo && !keep.find(v => v.filename === selectedVideo.filename)) setSelectedVideo(null);
+                setShowDeletePrompt(false);
+              }}>Keep 10 Newest</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editorVideo && (
+        <VideoEditor
+          video={editorVideo}
+          onClose={() => setEditorVideo(null)}
+          onExportComplete={(newVideo) => {
+            setCompletedVideos(prev => [newVideo, ...prev]);
+            setSelectedVideo(newVideo);
+          }}
+        />
+      )}
 
       <style dangerouslySetInnerHTML={{__html: `.spin { animation: spin 1s linear infinite; } @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}} />
     </div>
