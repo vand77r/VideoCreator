@@ -1,0 +1,274 @@
+.editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.editor-header h2 {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.editor-header .header-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.editor-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  grid-template-rows: 1fr auto;
+  overflow: hidden;
+}
+
+.editor-preview {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: #000;
+  overflow: hidden;
+}
+
+.editor-preview video {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.editor-props {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-light);
+  padding: 1.25rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.editor-props h3 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.editor-props .prop-section {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.editor-props .prop-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.editor-props .prop-row:last-child {
+  margin-bottom: 0;
+}
+
+.editor-props .prop-row label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.editor-props .prop-row input[type="text"],
+.editor-props .prop-row textarea {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  color: var(--text-primary);
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  outline: none;
+  resize: vertical;
+}
+
+.editor-props .prop-row input:focus,
+.editor-props .prop-row textarea:focus {
+  border-color: var(--accent-purple);
+}
+
+.editor-timeline {
+  grid-column: 1;
+  grid-row: 2;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-light);
+  padding: 1rem 1.5rem;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.timeline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.timeline-header span {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.timeline-track {
+  display: flex;
+  gap: 3px;
+  min-height: 72px;
+  align-items: stretch;
+}
+
+.timeline-slide {
+  position: relative;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 70px;
+  background: var(--bg-tertiary);
+}
+
+.timeline-slide:hover {
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.timeline-slide.selected {
+  border-color: var(--accent-purple);
+  box-shadow: 0 0 12px rgba(139, 92, 246, 0.25);
+}
+
+.timeline-slide .slide-thumb {
+  width: 100%;
+  height: 48px;
+  object-fit: cover;
+  display: block;
+}
+
+.timeline-slide .slide-info {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  padding: 2px 6px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.timeline-slide .slide-duration-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 0.6rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.anim-picker-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.anim-picker-grid button {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.7rem;
+  transition: all 0.12s;
+}
+
+.anim-picker-grid button:hover {
+  border-color: rgba(139, 92, 246, 0.4);
+}
+
+.anim-picker-grid button.active {
+  border-color: var(--accent-purple);
+  background: rgba(139, 92, 246, 0.12);
+  color: #c4b5fd;
+  font-weight: 600;
+}
+
+.editor-exporting-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  z-index: 10;
+  backdrop-filter: blur(4px);
+}
+
+.editor-exporting-overlay p {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.editor-exporting-overlay .spin {
+  animation: spin 1s linear infinite;
+}
+
+@media (max-width: 900px) {
+  .editor-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto auto;
+  }
+  .editor-props {
+    grid-column: 1;
+    grid-row: 3;
+    border-left: none;
+    border-top: 1px solid var(--border-light);
+    max-height: 300px;
+  }
+  .editor-timeline {
+    grid-row: 2;
+  }
+}
